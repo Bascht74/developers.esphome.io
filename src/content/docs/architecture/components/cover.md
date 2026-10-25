@@ -161,6 +161,58 @@ Stop and stop tilt are separate commands, as in Home Assistant. If your cover ca
 carries stop tilt when the trait is set. When a single motor drives both position and tilt, both commands can map to
 the same hardware stop.
 
+### Speeds
+
+If your cover can move at more than one speed, add a key that lists the speed names, validate it with
+`cover.validate_speeds` and pass the list to `cover.set_speeds()` in `to_code`. ESPHome fixes no names; each platform
+picks its own, for example `slow` and `fast`. A move without a speed uses the cover's default speed, so the list needs
+no `default` entry.
+
+```python
+CONF_SPEEDS = "speeds"
+
+CONFIG_SCHEMA = (
+    cover.cover_schema(MyCover)
+    .extend({cv.Optional(CONF_SPEEDS): cover.validate_speeds})
+    .extend(cv.COMPONENT_SCHEMA)
+)
+
+
+async def to_code(config):
+    var = await cover.new_cover(config)
+    await cg.register_component(var, config)
+    cover.set_speeds(var, config.get(CONF_SPEEDS, []))
+```
+
+`cover.validate_speeds` accepts a list of at least one unique, non-empty name. `cover.set_speeds()` is a plain
+function, not a coroutine: it puts the names in a flash table shared by every cover with the same list and defines
+`USE_COVER_SPEED`. With an empty list it does nothing, so a configuration without speeds compiles no speed code. Guard
+the speed code of your platform with `#ifdef USE_COVER_SPEED`.
+
+Callers pick a speed with `call.set_speed("fast")`; the `cover.open`, `cover.close` and `cover.control` actions and the
+native API do this for the user. In `control()`, `call.get_speed()` returns it as a `StringRef`: empty for the default
+speed, otherwise one of the names from `get_supported_speeds()`, because the call drops an unknown name with a warning.
+The call also drops a speed that comes without open, close or a position, so read it together with
+`call.get_position()`:
+
+```cpp
+void MyCover::control(const cover::CoverCall &call) {
+  if (call.get_position().has_value()) {
+#ifdef USE_COVER_SPEED
+    // Empty means the default speed, which is the slow motor here
+    this->use_fast_motor_ = call.get_speed() == "fast";
+#endif
+    float pos = *call.get_position();
+    this->move_to_position_(pos);
+    this->position = pos;
+    this->publish_state();
+  }
+}
+```
+
+`USE_COVER_SPEED` is also defined when another cover lists speeds or an action sets a `speed`; a cover without a list
+then gets an empty `get_speed()` on every call.
+
 ### Useful members
 
 - `position`: the current reported position, `0.0` (closed) to `1.0` (open). Use `cover::COVER_OPEN` / `cover::COVER_CLOSED` for the
